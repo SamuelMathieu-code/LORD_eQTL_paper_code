@@ -1,0 +1,343 @@
+---
+title: "deconvolution of bulk RNAseq from HLCA reference scRNA experiment"
+author: "Sébastien Renaut (sebastien.renaut@criucpq.ulaval.ca)"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    number_sections: F
+params:
+  datapath: 'C:/Users/renseb01/Documents/rnaseq/lord_kallisto'
+  hlca: 'C:/Users/renseb01/Documents/scRNA/scRNA/data/HLCA'
+  deconvolution: 'C:/Users/renseb01/Documents/rnaseq/deconvolution/music_sept2024'
+  cibersortX: FALSE
+  load_original_reference: FALSE
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = params$datapath)
+knitr::opts_chunk$set(echo = F)
+library(Seurat)
+library(omnideconv)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(factoextra)
+library(FactoMineR)
+library(RColorBrewer)
+library(biomaRt)
+library(org.Hs.eg.db)
+
+levels = c('ann_level_1','ann_level_2','ann_level_3','ann_level_4','ann_level_5','ann_finest_level')
+```
+
+
+# Download a reference Seurat object 
+* Download `hlca_dataset_587k_cells.rds` reference from [here](https://cellxgene.cziscience.com/collections/6f6d381a-7701-4781-935c-db10d30de293)
+* 587k annotated human lung cells
+* Watch out, it's **BIG** (5GB) !
+```{bash download reference, eval=F}
+curl -o local.rds "https://corpora-data-prod.s3.amazonaws.com/7bcad396-49c3-40d9-80c1-16d74e7b88bd/local.rds?AWSAccessKeyId=ASIATLYQ5N5XTNFZ64PH&Signature=nPRw3OfEs2BAJ53VRTUyWaM%2Bj7g%3D&x-amz-security-token=IQoJb3JpZ2luX2VjEG4aCXVzLXdlc3QtMiJHMEUCIFn3rrqkhDNH8Z%2F2UQl%2Bj8cirrNV5AlvILBUr7dIDmSZAiEAj3yBZjO6L4RlbEZcCKGFCerGRCfirs7l%2B5UY2qE44hYq6wMIdxABGgwyMzE0MjY4NDY1NzUiDBMV7F1OUVQgBqAmmCrIA2HOpq%2BUq0pzc04tuUeOEhcMF42Dh3tHXcnykTan1ggtgbRDN9lZJ3oXheGiI9%2FF%2F2K6LsfCNKZjAEqjYqkyA0I%2FMDJCmfMrA8sXxvgENlKHAC%2FeFN4EZe1fL6AzIeY36%2FEt1tEFfQ%2F%2Fi4FLmlG4x9ep89A2OxmfsEMmdgxwbBnIo7FB2AmXq2di5i3ay43M6wBCHaxZ5XCF4ooPQ%2FjzIWcs9VMsLKwxJnC2S%2BeNhYNg3P8yMlQtkci4d5V2avPxdLRxlXFQOyN6VSZPufsZ583m%2BCw7fd2OXI3aIQFUjApE0YE1FILwIGJUlqnXEOE%2BF9QKTFYLTsesucOhKCpGpaBxfJWmi7BHyKz4JkEHpeQYJ1jAZoDb2i%2F6t6wjkfnlz%2BN2c4yrYIbSFeienxQf5LXnwOphMGxhMYwwaYuz4C7EpTCIykaPdPZ790lc%2FK7tjSLa9QODjWA%2B3PYnKXWemUzcTrPcs5j1qbbbXa2sGqWcTK4zPB%2FQREqB%2Ft9nL4oglzUmH4oc1hVF%2B3QZD%2BKMyhuD96nayo5MJ5eqS%2FjRTpobuuOAKTW5vh%2FjK%2F8iV5c8i3u%2F19TNJjXWf1ui%2Fmp%2F0C6exz3qXRSc8TClq4CpBjqlASQ%2BDVWcaEYGT6diPbaIUxlI%2BX184UsHVcZNq%2FKdjLvsB0H9QvJqR%2Fpw1IKRAEv880iFS7qN73MCF1Kw7xS7SvL6PoDic4fzkRzJ9%2BkC0N2lr4SzhErtTc%2B1GyN3CWwH967HfLXq4vPadzvk08TTNTbJAgJEKe84FKHm%2F8wUKhcZhIR6Ek7PpBvn4THSamHKXzPjtnPTAur9THjrY8A8g3ZjCJjlZQ%3D%3D&Expires=1697224687"
+```
+
+
+#check directory exists, else warning of create them.
+```{r reference, eval = T}
+if (!dir.exists(params$datapath)){ 
+  warning(paste0('Dir: ',params$datapath,' does not exist. Please check')) }
+
+if (!dir.exists(params$hlca)){ 
+  warning(paste0('Dir: ',params$hlca,' does not exist. Please check')) }
+
+if (!dir.exists(params$deconvolution)){ 
+  warning(paste0('Dir: ',params$deconvolution,' does not exist. Please check')) }
+
+if (!dir.exists(file.path(params$deconvolution,'cibersortX'))){ 
+  warning(paste0(file.path(params$deconvolution,'cibersortX'),' does not exist. I will create it')) 
+  dir.create(file.path(params$deconvolution,'cibersortX'))
+}
+
+if (!dir.exists(file.path(params$deconvolution,'results'))){ 
+  warning(paste0(file.path(params$deconvolution,'results'),' does not exist. I will create it')) 
+  dir.create(file.path(params$deconvolution,'results'))
+  }
+```
+
+
+#Generate the reference matrix for the deconvolution
+```{r reference, eval = T}
+t=1
+marker_genes = read.table(file.path(params$deconvolution,'../marker_genes.txt'),sep = '\t',header = F)
+marker_genes = unique(gsub(' ','',unlist(strsplit(marker_genes$V2,','))))
+
+#conversion from ENTREZID -> Ensembl
+conversion = select(org.Hs.eg.db, keys =marker_genes, columns = c("ENTREZID", "SYMBOL","ENSEMBL"), keytype = "SYMBOL")
+conversion = conversion[!is.na(conversion$ENSEMBL),]
+conversion = conversion[!duplicated(conversion$ENSEMBL), c(1,3)]
+
+#load HLCA reference
+reference = readRDS(file.path(params$hlca,"hlca_dataset_587k_cells.rds"))
+reference = subset(reference,  subset = ann_level_2 != 'None')
+reference = subset(reference,  subset = ann_level_3 != 'None')
+reference@meta.data$cellname = rownames(reference@meta.data)
+reference_meta.data = as.data.frame(lapply(reference@meta.data, as.character))
+
+data = GetAssayData(reference,slot = 'count')
+dim(data)
+#keep top 10% most variable genes as a reference for the deconvolution
+variance_genes = FindVariableFeatures(data)
+cutoff = quantile(variance_genes$vst.variance,seq(0,1,by = 0.05))[16]
+data_healthy = data[variance_genes$vst.variance>=cutoff | rownames(variance_genes) %in% conversion$ENSEMBL,]
+
+#add the adeno unknown cell types. ADENO DATASET
+    bigdata_subset <- SeuratDisk::LoadH5Seurat(file.path(params$hlca,"hlca_subset_2.8M_cells.h5seurat"),meta.data = FALSE,misc=FALSE)
+    metadata = read.csv(file.path(params$hlca,'hlca_subset_2.8M_cells.csv'),row.names =  1)
+    bigdata_subset@meta.data = metadata
+    bigdata_subset@meta.data$cellname = rownames(bigdata_subset@meta.data)
+    reference_adeno = subset(bigdata_subset, disease == 'lung adenocarcinoma')
+    bigdata_subset = NULL; gc()
+    reference_adeno = subset(reference_adeno, ann_level_1 != 'Unknown')
+    reference_adeno = subset(reference_adeno, ann_level_2 != 'Unknown')
+    reference_adeno = subset(reference_adeno, ann_level_3 != 'Unknown')
+    reference_adeno = subset(reference_adeno, ann_level_3 != '')
+    reference_adeno_meta.data = reference_adeno@meta.data
+    data_adeno = GetAssayData(reference_adeno,layer = 'data')
+    reference_adeno = NULL; gc()
+    
+
+#keep all annotations, but only 10% of cells (5800 cells)
+cell_type_annotations_healthy = reference@meta.data[,colnames(reference@meta.data) %in% c(levels,'cellname','study')]
+cell_type_annotations_adeno = reference_adeno_meta.data[,colnames(reference_adeno_meta.data) %in% c(levels,'cellname','study')]
+
+data_adeno = data_adeno[rownames(data_adeno) %in% rownames(data_healthy),]
+data_adeno = data_adeno[order(rownames(data_adeno)),]
+
+data_healthy = data_healthy[rownames(data_healthy) %in% rownames(data_adeno),]
+data_healthy = data_healthy[order(rownames(data_healthy)),]
+
+for(i in c(1,2,3,6)){
+###MERGE DATASETS for healthy and adeno
+  set.seed(123456)
+  cell_type_annotations_healthy_sliced = cell_type_annotations_healthy %>% group_by_at(levels[i]) %>% slice_sample(n = c(1000,0,500)[t])
+  cell_type_annotations_adeno_sliced = cell_type_annotations_adeno %>% group_by_at(levels[i]) %>% slice_sample(n = c(0,1000,500)[t])
+  cell_type_annotations = rbind(cell_type_annotations_healthy_sliced,cell_type_annotations_adeno_sliced)
+  cell_type_annotations = cell_type_annotations[order(cell_type_annotations$cellname),]
+ 
+  variable_data = cbind(data_healthy,data_adeno)
+  variable_data_subset = variable_data[,colnames(variable_data) %in% cell_type_annotations$cellname]
+  variable_data_subset = variable_data_subset[,order(colnames(variable_data_subset))]
+  dim(variable_data_subset)
+  #save Single Cell expression matrix + annotation music
+  write.csv(cell_type_annotations,file.path(params$deconvolution,paste0('cell_type_annotations_',levels[i],'_Xpercent.csv')))
+  write.csv(variable_data_subset,file.path(params$deconvolution,paste0('variable_singlecelldata_',levels[i],'_Xpercent.csv')))
+  
+  print(paste0('Done i: ',i, ', The time is: ',Sys.time()))
+}
+```
+
+#Do the bulk RNAseq deconvolution
+```{r real data deconvolution}
+  #1.get clinical data
+  if(file.exists(file.path(params$datapath,'../data/clinical_bigtable_v2.csv'))) clinical_bigtable = read.csv(file.path(params$datapath,'../data/clinical_bigtable_v2.csv'), check.names = F)
+
+  #3. get bulkRNAseq data
+  txi = readRDS(file.path(params$datapath,'txi.rds'))
+
+  txi_sc = readRDS(file.path(params$datapath,'../pilot_kallisto/txi.rds')) #single cell samples
+  bulk_sc = txi_sc$abundance[,grep('BULK',colnames(txi_sc$abundance))]
+
+  bulk = as.matrix(txi$abundance)
+  bulk = as.data.frame(cbind(bulk,bulk_sc))
+
+  rownames(bulk) = sapply(strsplit(rownames(bulk), ".",fixed = T), "[",1) #matrix. genes X cells. Floats (Counts). Raw abundance (so TPM)
+  colnames(bulk) = sapply(strsplit(colnames(bulk), ".",fixed = T), "[",5)
+  
+  bulkRNAseq = round(bulk,2)
+  
+  deconv_music = list()
+  
+  if(!file.exists(file.path(params$deconvolution,'results/deconv_music.RDS'))){
+  
+  for(i in c(1,2,3,6)){
+  print(paste0('Start i: ',i, ' The time is:',Sys.time()))
+  #2.Reference data
+  cell_type_annotations_Xpercent = read.csv(file.path(params$deconvolution,paste0('cell_type_annotations_',levels[i],'_Xpercent.csv')), row.names = 1)
+  variable_singlecelldata_Xpercent = as.matrix(read.csv(file.path(params$deconvolution,paste0('variable_singlecelldata_',levels[i],'_Xpercent.csv')),row.names = 1))
+
+  bulk = bulkRNAseq[rownames(bulkRNAseq) %in% rownames(variable_singlecelldata_Xpercent),]
+  rmean = rowMeans(bulk)
+  bulk = bulk[rmean>0.001,]
+  
+  #filter genes in reference data
+  sc_data = variable_singlecelldata_Xpercent[rownames(variable_singlecelldata_Xpercent) %in% rownames(bulk),] #matrix. 2800 genes X 5802 cells. Integers (Counts). Raw.
+  ct_annotations <- as.character(cell_type_annotations_Xpercent[,colnames(cell_type_annotations_Xpercent)%in%levels[i]]) #vector. 5802 values. Cell types. characters.
+  batch_ids <- as.character(cell_type_annotations_Xpercent$study) #vector. 5802 values. 11 studies. Characters.
+
+  #2a. Build a Signature Matrix (music)
+  signature_matrix_music <- build_model(variable_singlecelldata_Xpercent, ct_annotations, "music", bulk_gene_expression = bulk, batch_ids = batch_ids)
+
+  write.csv(signature_matrix_music,file.path(params$deconvolution,paste0('signature_matrix_music_',levels[i],'.csv')))
+  
+  #3. Deconvolute with MUSIC,
+  deconvolution_music = as.data.frame(deconvolute(bulk_gene_expression=bulk,
+                          signature=signature_matrix_music,
+                          method = "music",
+                          single_cell_object = sc_data,
+                          cell_type_annotations = ct_annotations,
+                          batch_ids = batch_ids))
+           
+
+  #add attributes to the deconvolution object
+  deconvolution_music$tissue = 'Sain'
+  deconvolution_music$tissue[grep('Tumeur',rownames(deconvolution_music))] = 'Tumeur'
+  deconvolution_music$`Record ID` = sapply(strsplit(rownames(deconvolution_music), "_"), "[",3)
+  
+  #merge clinical data
+  #deconv_music_clinical = merge(deconvolution_music,clinical_bigtable, by = 'Record ID')
+
+  #pivot longer
+  #deconv = deconv_music_clinical %>% pivot_longer(names_to = "celltypes",values_to = 'fraction of total', cols = 2:(ncol(deconvolution_music)-1))
+ 
+  #save for later
+  deconv_music[[i]] = deconvolution_music
+  print(paste0('Done i: ',i, ' The time is:',Sys.time()))
+  }
+  saveRDS(deconv_music,file.path(params$deconvolution,'results/deconv_music.RDS'))
+
+  } else {
+    deconv_music = readRDS(file.path(params$deconvolution,'results/deconv_music.RDS'))
+    write.table(deconv_music[[1]],paste0(params$deconvolution,'/deconvolution_level1.csv'),col.names = T)
+}
+```
+
+
+# QC  
+```{r QCstats, message= T}
+###session
+metadata = read.csv(file.path(params$hlca,"../adeno.24samples_metadata.csv"),row.names = 1)
+i=3
+df = data.frame(Frequency_Sain = round(colMeans(deconv_music[[i]][deconv_music[[i]]$tissue == "Sain",1:(ncol(deconv_music[[i]])-2)])*100,2),
+                Frequency_Tumeur = round(colMeans(deconv_music[[i]][deconv_music[[i]]$tissue == "Tumeur",1:(ncol(deconv_music[[i]])-2)])*100,2) )
+
+
+#coarse
+df$coarse = 'Stromal'
+df$coarse[rownames(df) %in% names(table(metadata$predicted.ann_level_3[metadata$predicted.ann_level_1 == 'Endothelial']))] = 'Endothelial'
+df$coarse[rownames(df) %in% names(table(metadata$predicted.ann_level_3[metadata$predicted.ann_level_1 == 'Epithelial']))] = 'Epithelial'
+df$coarse[rownames(df) %in% names(table(metadata$predicted.ann_level_3[metadata$predicted.ann_level_1 == 'Immune']))] = 'Immune'
+
+
+#correspondence with Crapo et al. 1982
+df$crapo82_groups = 'Interstitial'
+df$crapo82_groups[rownames(df) %in% names(table(metadata$predicted.ann_level_3[metadata$predicted.ann_level_1 == 'Endothelial']))] = 'Endothelial'
+df$crapo82_groups[1] = 'AT1'
+df$crapo82_groups[2] =  'AT2'
+df$crapo82_groups[15] =  'Macrophages'
+
+df %>% group_by(crapo82_groups) %>% summarise(frequency = sum(Frequency_Sain ))
+
+```
+
+
+# compare 4 samples in deconvo vs. sn vs scRNAseq  
+```{r compare, message= T}
+###session
+metadata = read.csv(file.path(params$hlca,"../adeno.24samples_metadata.csv"),row.names = 1)
+
+single_summarised = metadata %>% count(patient,predicted.ann_level_1,predicted.ann_level_3,method,type) %>% mutate(freq = prop.table(n), .by = c(patient,method,type)) %>% filter(method == 'Nucleus')
+single_summarised$freq = round(single_summarised$freq*100,2)
+single_summarised_ori = single_summarised
+
+#a FOR loop to split the unknowns evenly
+for(type in c('Normal','Tumor'))
+{
+  
+#partition the unknowns 
+for( p in c(4,6,8,10)){
+ 
+    patientN = single_summarised[(single_summarised$patient == p) & (single_summarised$type == type),]
+    patientN_knowns = patientN[patientN$predicted.ann_level_3!='unknown',]
+    patientN_unknowns = patientN[patientN$predicted.ann_level_3=='unknown',]
+  
+    print(paste0('Patient ',p,', Total before --- ', sum(patientN$freq), ' --- '))
+    
+    for(u in 1:nrow(patientN_unknowns)){
+      
+      temp_unknown = patientN_unknowns[u,]
+      
+      if(temp_unknown$predicted.ann_level_1 != 'unknown') {
+        temp_known = patientN_knowns$freq[patientN_knowns$predicted.ann_level_1 == temp_unknown$predicted.ann_level_1]
+     #   temp_known = temp_known + (temp_known / sum(temp_known) * temp_unknown$freq)
+        temp_known = temp_known + (temp_unknown$freq / length(temp_known)) 
+        patientN_knowns$freq[patientN_knowns$predicted.ann_level_1 == temp_unknown$predicted.ann_level_1] = temp_known
+      }
+      
+      if(temp_unknown$predicted.ann_level_1 == 'unknown') {
+        temp_known = patientN_knowns$freq
+     #   temp_known = temp_known + (temp_known / sum(temp_known) * temp_unknown$freq)
+        temp_known = temp_known + (temp_unknown$freq / length(temp_known)) 
+        patientN_knowns$freq = temp_known
+    }
+    }
+    
+    patientN[patientN$predicted.ann_level_3!='unknown',] = patientN_knowns
+    single_summarised[(single_summarised$patient == p) & (single_summarised$type == type),] = patientN
+    
+    s1 = sum(single_summarised$freq[(single_summarised$predicted.ann_level_3 != 'unknown') & (single_summarised$patient == p) & (single_summarised$type == 'Normal')] )
+    s2 = sum(single_summarised$freq[(single_summarised$predicted.ann_level_1 == 'unknown') & (single_summarised$patient == p) & (single_summarised$type == 'Normal')] )
+    
+     print(paste0('Patient ',p,', Total after --- ', s1,' + ', s2, ' --- '))
+     }
+}
+
+
+#PREPARE THE DECONVOLUTION OBJECT
+deconvo = as.data.frame(round(t(deconv_music[[3]][c(1031,1032,1034,1036,1037,1038),1:24])*100,2))
+deconvo$predicted.ann_level_3 = row.names(deconvo)
+
+deconvo_pivoted = deconvo %>% pivot_longer(1:6,values_to = 'freq',names_to = 'samples')
+deconvo_pivoted$patient = sapply(strsplit(deconvo_pivoted$samples, "-"), "[",1)
+deconvo_pivoted$type = 'Normal'
+deconvo_pivoted$type[grep('CTT',deconvo_pivoted$samples)] = 'Tumor'
+
+#MERGE OBJECTS
+merged =  merge(single_summarised,deconvo_pivoted, by = c('predicted.ann_level_3','patient','type'))
+merged_ori =  merge(single_summarised_ori,deconvo_pivoted, by = c('predicted.ann_level_3','patient','type'))
+merged$patient = as.factor(merged$patient)
+
+
+#PLOTS
+m1 = ggplot(merged,aes(x = freq.x, y = freq.y,label= predicted.ann_level_3)) + 
+  geom_point(aes(col = patient)) +
+   scale_x_continuous(trans = 'log10') +
+   scale_y_continuous(trans = 'log10') +
+  geom_abline(aes(colour = "y = x",slope = 1,intercept = 0), show_guide=TRUE,linetype = 2) +
+  facet_wrap(.~type) +
+  geom_smooth( method = lm,color= 'darkgoldenrod4',linewidth = 2,fill = "orange") +
+  geom_text_repel() +
+  ylab('deconvolution-based proportions') +
+  xlab('snRNAseq-based proportions') + 
+  #xlim(c(0,100)) + 
+  ggtitle('Comparison of methods') +
+  scale_color_discrete(type  = c('darkred','darkblue','purple','black')) +
+  theme_bw()
+
+
+pdf(file.path(params$datapath,'../results/predictions_August2024/Figure1_SN_deconvo.pdf'),width = 14,height = 8) 
+m1
+dev.off()
+
+
+#
+cor(merged$freq.x[merged$type == 'Normal'],merged$freq.y[merged$type == 'Normal'])
+cor(merged$freq.x[merged$type == 'Tumor'],merged$freq.y[merged$type == 'Tumor'])
+```
+
+
+# session info 
+```{r session, message= T}
+###session
+sessionInfo()
+```
+     

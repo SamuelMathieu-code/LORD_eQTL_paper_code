@@ -35,3 +35,7 @@ We then only considered module-variant pairs for which the variant was the best 
 ## 3. Make the sensitivity analyses for all significant pairs
 
 See `sensitivity.jl`.
+
+## 4. Mediation
+
+See `mediation.jl` for mediation analysis for two module-QTLs.

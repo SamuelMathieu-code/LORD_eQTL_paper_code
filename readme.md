@@ -8,7 +8,9 @@ This repository contains code for eQTL analysis and it's downstream analysis and
 - Transcription factor binding sites were assessed (see `TFBS_disrupt` folder)
 - Differetial expression analysis was performed (see `DEG` folder)
 - Module-QTL analysis was performed (see `module_qtl` folder)
-- Survival GWAS analysis was performed (see `survival_gwas` folder)
+- Survival GWAS analysis was performed (see `survival_gwas` folder)]
+- Deconvolution analysis
+- Comparison between common somatic alterations and germline effects on tumor gene expression
 
 The `utils` folders contains the code for `convert_to_hgnc` and `plink_bed_encoding_to_genotype` functions.
 

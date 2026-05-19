@@ -5,8 +5,8 @@ We want to see wether the increased heterogeneity in expression values in tumor 
 ```{r}
 library(edgeR, help, pos = 2, lib.loc = NULL)
 
-expr_values <- readRDS("/mnt/raid5_hdd/matsam01/MENDEL_LORD/processed_data/LORD_project/RNAseq/processed_data/kallisto/txi.rds")$counts
-genes <- read.table("genes_for_DEG.txt")$V1
+expr_values <- readRDS("txi.rds")$counts
+genes <- read.table("genes_for_DEG.txt")$V1 # Re-use the same list of genes as for DEG analysis
 expr_values <- expr_values[genes, ]
 ```
 
@@ -142,7 +142,7 @@ ggsave("img/pearson_residuals_lung_vs_tumor.pdf", width = 10, height = 10)
 load the abundance values
 
 ```{r}
-abundance_values <- readRDS("/mnt/raid5_hdd/matsam01/MENDEL_LORD/processed_data/LORD_project/RNAseq/processed_data/kallisto/txi.rds")$abundance
+abundance_values <- readRDS("txi.rds")$abundance
 abundance_values <- abundance_values[rownames(fit$counts), colnames(fit$counts)]
 ```
 

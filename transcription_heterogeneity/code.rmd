@@ -1,0 +1,229 @@
+# Answer to Rev3 coloc comment
+
+We want to see wether the increased heterogeneity in expression values in tumor contributes to the delta-eQTL effect.
+
+```{r}
+library(edgeR, help, pos = 2, lib.loc = NULL)
+
+expr_values <- readRDS("/mnt/raid5_hdd/matsam01/MENDEL_LORD/processed_data/LORD_project/RNAseq/processed_data/kallisto/txi.rds")$counts
+genes <- read.table("genes_for_DEG.txt")$V1
+expr_values <- expr_values[genes, ]
+```
+
+## Make model
+
+In the first step, we make a EdgeR model for gene expression.
+
+```{r}
+# 1. Make sure counts is genes × samples
+# If your current matrix is samples × genes, transpose:
+counts <- expr_values  # remove this line if it's already genes × samples
+
+# 2. Extract pair and condition from sample names
+sample_names <- colnames(counts)
+# Example: "some_random_prefix_1_A", "some_random_prefix_1_B", etc.
+split_names <- strsplit(sample_names, "_")
+
+pair    <- sapply(split_names, function(s) s[length(s) - 1])
+condition <- sapply(split_names, function(s) s[length(s)])
+
+# Turn into factors (order matters if you want specific baselines)
+pair      <- factor(pair)
+condition <- factor(condition, levels = c("Sain", "Tumeur"))
+levels(condition)[levels(condition) == "Sain"]   <- "Lung"
+levels(condition)[levels(condition) == "Tumeur"] <- "Tumor"
+```
+
+```{r}
+# 3. Build DGEList and pipeline
+y <- DGEList(counts = counts)
+y <- calcNormFactors(y)
+
+# 4. Design matrix: pair as blocking factor, condition of interest
+design <- model.matrix(~ condition)
+colnames(design)
+```
+
+```{r}
+# 5. Estimate dispersion and fit NB GLM
+y <- estimateDisp(y, design)
+fit <- glmFit(y, design)
+```
+
+```{r}
+# 6. Extract residuals
+fitted_vals <- fit$fitted.values  # genes × samples, on count scale
+
+# Deviance residuals: sign(observed - fitted) * sqrt(d_i)
+# EdgeR stores the deviance components; easiest to compute directly:
+obs <- fit$counts
+mu  <- fitted_vals
+phi <- fit$dispersion
+
+# Poisson-style deviance residuals (approximation)
+dev_res <- sign(obs - mu) * sqrt(2 * (ifelse(obs == 0, 0, obs * log(obs / mu)) - (obs - mu)))
+
+# pearson residuals
+var_nb  <- mu + phi * mu^2  
+pear_res <- (obs - mu) / sqrt(var_nb)
+```
+
+## Validation of increased heterogeneity
+
+Second, we need to validate that tumors indeed have an increased heterogeneity. We do that by comparing the deviance residuals of the lung and tumor samples.
+
+```{r}
+# Split deviance residuals by condition
+# pear_res is genes × samples; we want per-gene distributions
+# Melt into long format for plotting and testing
+sain_idx   <- which(condition == "Lung")
+tumeur_idx <- which(condition == "Tumor")
+
+# Per-sample median residual (one value per gene)
+sain_medians   <- apply(pear_res[, sain_idx,   drop = FALSE], 2, median)
+tumeur_medians <- apply(pear_res[, tumeur_idx, drop = FALSE], 2, median)
+
+# Sign test: for each pair, is Tumor > Lung?
+# Assumes paired samples (same pair IDs, matched by pair factor)
+
+diffs <- sapply(genes, function(g) {
+    t_idx <- which(condition == "Tumor")
+    s_idx <- which(condition == "Lung")
+    mean(abs(pear_res[g, t_idx])) - mean(abs(pear_res[g, s_idx]))
+})
+
+lung_dev <- sapply(genes, function(g) {
+    t_idx <- which(condition == "Tumor")
+    s_idx <- which(condition == "Lung")
+    mean(abs(pear_res[g, s_idx]))
+})
+
+tumor_dev <- sapply(genes, function(g) {
+    t_idx <- which(condition == "Tumor")
+    s_idx <- which(condition == "Lung")
+    mean(abs(pear_res[g, t_idx]))
+})
+
+n_pos    <- sum(diffs > 0)
+n_nonzero <- sum(diffs != 0)
+
+# Exact binomial sign test (H0: median diff = 0, two-sided)
+sign_test <- binom.test(n_pos, n_nonzero, p = 0.5, alternative = "two.sided")
+
+cat("=== Sign Test: Deviance Residuals (Tumor vs Lung) ===\n")
+cat(sprintf("genes with absolute Tumor deviance > Lung deviance : %d / %d\n", n_pos, n_nonzero))
+cat(sprintf("p-value: %.4e\n", sign_test$p.value))
+```
+
+```{r}
+library(ggplot2)
+
+df <- data.frame(
+    deviance = c(lung_dev, tumor_dev),
+    condition = factor(c(rep("Lung", length(lung_dev)), 
+                       rep("Tumor", length(tumor_dev))),
+                     levels = c("Lung", "Tumor"))
+)
+
+ggplot(df, aes(x = condition, y = deviance, fill = condition)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("Lung" = "#ffbf0086", "Tumor" = "#1a004aa3")) +
+  labs(x = "Condition", y = "Mean absolute pearson residuals (per gene)") +
+  theme_classic(base_size = 28) +
+  theme(
+    legend.position = "none",
+    aspect.ratio = 1
+  )
+ggsave("img/pearson_residuals_lung_vs_tumor.pdf", width = 10, height = 10)
+```
+
+## Any relationship between expression levels and mean/mdeian deviance?
+
+load the abundance values
+
+```{r}
+abundance_values <- readRDS("/mnt/raid5_hdd/matsam01/MENDEL_LORD/processed_data/LORD_project/RNAseq/processed_data/kallisto/txi.rds")$abundance
+abundance_values <- abundance_values[rownames(fit$counts), colnames(fit$counts)]
+```
+
+```{r}
+mean_expr_sain   <- rowMeans(log1p(abundance_values[, sain_idx]))
+mean_expr_tumeur <- rowMeans(log1p(abundance_values[, tumeur_idx]))
+
+df_scatter <- data.frame(
+  deviance   = c(lung_dev, tumor_dev),
+  expression = c(mean_expr_sain, mean_expr_tumeur),
+  condition  = factor(c(rep("Lung", length(lung_dev)),
+                        rep("Tumor", length(tumor_dev))),
+                      levels = c("Lung", "Tumor"))
+)
+
+x_lo <- quantile(df_scatter$expression, 0.01)
+x_hi <- quantile(df_scatter$expression, 0.99)
+
+ggplot(df_scatter, aes(x = expression, y = deviance, color = condition)) +
+  geom_point(alpha = 0.3, size = 0.8) +
+  geom_smooth(method = "loess", se = TRUE) +
+  scale_color_manual(values = c("Lung" = "#ffbf0086", "Tumor" = "#1a004aa3")) +
+  labs(x = "Mean log1p expression", y = "Mean absolute pearson residuals (per gene)",
+       color = "Condition") +
+  theme_classic(base_size = 28) +
+  coord_cartesian(xlim = c(x_lo, x_hi)) +
+  theme(aspect.ratio = 1)
+  ggsave("img/pearson_residuals_vs_gene_expr.pdf", width = 10, height = 10)
+```
+
+## Any relationship between mean/median devicance change and Delta-eQTL effect size?
+
+```{r}
+delta_eqtl <- read.csv("/mnt/raid5_hdd/matsam01/genetic_association_sumstats/lung_expression_LORD2024/Delta_eQTLs_60_peer_best_hit.tsv", sep = "\t")
+```
+
+```{r}
+# Build a named vector from diffs (assuming names are gene IDs)
+diffs_df <- data.frame(
+  phe_id = names(diffs),
+  diffs  = as.numeric(diffs),
+  tumor = tumor_dev,
+  lung = lung_dev
+)
+
+# Merge with delta_eqtl by gene ID
+df_eqtl <- merge(diffs_df, delta_eqtl[, c("phe_id", "slope", "slope_lung", "slope_tumor")], by = "phe_id")
+
+x_lo <- quantile(df_eqtl$slope, 0.001)
+x_hi <- quantile(df_eqtl$slope, 0.999)
+
+ggplot(df_eqtl, aes(x = abs(slope), y = diffs)) +
+  geom_point(alpha = 0.3, size = 0.8) +
+  geom_smooth(data = subset(df_eqtl, slope >= x_lo & slope <= x_hi),
+              method = "loess", se = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  labs(x = "delta-eQTL slope",
+  y = "Difference of mean absolute pearson residuals") +
+  theme_classic(base_size = 28) +
+  theme(aspect.ratio = 1)
+  ggsave("img/pearson_residuals_vs_delta_effect_size.pdf", width = 10, height = 10)
+```
+
+## Any relationship between eQTL effect size fold change / difference and Deviance difference?
+
+```{r}
+df_eqtl$slope_diff <- df_eqtl$slope_tumor - df_eqtl$slope_lung
+
+x_lo <- quantile(df_eqtl$slope_diff, 0.001)
+x_hi <- quantile(df_eqtl$slope_diff, 0.999)
+
+ggplot(df_eqtl, aes(x = abs(slope_diff), y = diffs)) +
+  geom_point(alpha = 0.3, size = 0.8) +
+  geom_smooth(data = subset(df_eqtl, slope_diff >= x_lo & slope_diff <= x_hi),
+              method = "loess", se = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  labs(x = "Absolute eQTL effect size difference",
+  y = "Difference of mean absolute pearson residuals") +
+  theme_classic(base_size = 28) +
+  theme(aspect.ratio = 1)
+  ggsave("img/pearson_residuals_vs_tum-lung_effect_sizes.pdf", width = 10, height = 10)
+```

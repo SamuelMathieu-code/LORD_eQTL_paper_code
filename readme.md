@@ -11,6 +11,7 @@ This repository contains code for eQTL analysis and it's downstream analysis and
 - Survival GWAS analysis was performed (see `survival_gwas` folder)
 - Deconvolution analysis (see `deconvolution` folder)
 - Comparison between common somatic alterations and germline effects on tumor gene expression (see `somatic_vs_germline` folder)
+- Quantification of expression heterogeneity and relationship to Delta-eQTL analysis (see `transcription_heterogeneity` folder)
 
 The `utils` folders contains the code for `convert_to_hgnc` and `plink_bed_encoding_to_genotype` functions.
 

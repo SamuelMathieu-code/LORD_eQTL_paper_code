@@ -1,4 +1,4 @@
-# Code from "*Germline variants affect lung to tumor transcription dynamics, NSCLC relapse and mortality*"
+# Code from "*Germline variants affect lung-to-tumor transcription dynamics, NSCLC outcomes*"
 
 This repository contains code for eQTL analysis and it's downstream analysis and for the survival GWAS analysis. R and Julia were used as main analysis softwares.
 
